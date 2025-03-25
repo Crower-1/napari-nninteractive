@@ -349,7 +349,7 @@ class BaseGUI(QWidget):
         self.label_selection = setup_layerselect(
             _layout, viewer=self._viewer, layer_type=Labels, function=lambda: None
         )
-        self.label_selection.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLength)
+        # self.label_selection.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLength)
 
         self.save_selected_button = setup_iconbutton(
             _layout,
