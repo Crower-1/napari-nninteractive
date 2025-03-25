@@ -1,3 +1,6 @@
+import os
+import mrcfile
+import numpy as np
 from typing import Optional
 
 from napari.layers import Image, Labels
@@ -25,6 +28,7 @@ from qtpy.QtWidgets import (
     QSizePolicy,
     QVBoxLayout,
     QWidget,
+    QFileDialog,
 )
 
 
@@ -58,6 +62,8 @@ class BaseGUI(QWidget):
         _scroll_layout.addWidget(self._init_interaction_selection())  # Interaction Selection
         _scroll_layout.addWidget(self._init_run_button())  # Run Button
         _scroll_layout.addWidget(self._init_export_button())  # Run Button
+        _scroll_layout.addWidget(self._init_save_buttons())  # 新增：保存为 MRC 文件按钮
+
 
         _ = setup_acknowledgements(_scroll_layout, width=self._width)  # Acknowledgements
 
@@ -336,6 +342,34 @@ class BaseGUI(QWidget):
         _group_box.setLayout(_layout)
         return _group_box
 
+    def _init_save_buttons(self) -> QGroupBox:
+        """初始化保存为 MRC 文件的按钮组，同时增加图层选择控件"""
+        _group_box, _layout = setup_vgroupbox(text="Save as MRC:")
+
+        self.label_selection = setup_layerselect(
+            _layout, viewer=self._viewer, layer_type=Labels, function=lambda: None
+        )
+        self.label_selection.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLength)
+
+        self.save_selected_button = setup_iconbutton(
+            _layout,
+            "Save Selected Layer",
+            "copy_to_clipboard",
+            self._viewer.theme,
+            self.on_save_selected_layer,
+            tooltips="Save the selected layer as .mrc (binary 0/1, uint8)"
+        )
+        self.save_objects_button = setup_iconbutton(
+            _layout,
+            "Save Object Layers",
+            "pop_out",
+            self._viewer.theme,
+            self.on_save_objects_layers,
+            tooltips="Merge all 'object' layers and save as .mrc (mask with unique id, int16)"
+        )
+        _group_box.setLayout(_layout)
+        return _group_box
+
     # Event Handlers
     def on_init(self, *args, **kwargs) -> None:
         """Initializes the session configuration based on the selected model and image."""
@@ -383,3 +417,62 @@ class BaseGUI(QWidget):
 
     def _export(self) -> None:
         """Placeholder method for exporting all generated label layers"""
+
+    def on_save_selected_layer(self):
+        # 通过 label_selection 获取当前选择的图层
+        try:
+            layer = self.label_selection.currentLayer
+        except AttributeError:
+            print("No layer selected in label_selection!")
+            return
+
+        if layer is None:
+            print("No layer selected!")
+            return
+
+        data = layer.data
+        binary_data = (data > 0).astype(np.uint8)
+
+        # 弹出文件保存对话框
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Selected Layer", "", "MRC Files (*.mrc)")
+        if not file_path:
+            return
+        if not file_path.lower().endswith('.mrc'):
+            file_path += '.mrc'
+
+        import mrcfile
+        with mrcfile.new(file_path, overwrite=True) as mrc:
+            mrc.set_data(binary_data)
+            mrc.voxel_size = 17.14
+
+        print("Saved selected layer to", file_path)
+
+    # 新增：合并所有以 "object" 开头的图层，并保存为 .mrc (int16 格式)
+    def on_save_objects_layers(self):
+        # 筛选所有名称以 "object" 开头的图层
+        object_layers = [layer for layer in self._viewer.layers if layer.name.startswith("object")]
+        if not object_layers:
+            print("No object layers found!")
+            return
+
+        # 假设所有图层大小一致，以第一个图层为基础创建空白数组
+        merged = np.zeros(object_layers[0].data.shape, dtype=np.int16)
+        for idx, layer in enumerate(object_layers, start=1):
+            data = layer.data
+            binary_data = (data > 0).astype(np.int16)
+            id_mask = binary_data * idx
+            merged[binary_data > 0] = id_mask[binary_data > 0]
+
+        # 弹出文件保存对话框
+        file_path, _ = QFileDialog.getSaveFileName(self, "Save Object Layers", "", "MRC Files (*.mrc)")
+        if not file_path:
+            return
+        if not file_path.lower().endswith('.mrc'):
+            file_path += '.mrc'
+
+        import mrcfile
+        with mrcfile.new(file_path, overwrite=True) as mrc:
+            mrc.set_data(merged)
+            mrc.voxel_size = 17.14
+
+        print("Saved merged object layers to", file_path)
