@@ -191,6 +191,19 @@ class BaseGUI(QWidget):
             tooltips="Keep current segmentation and go to the next object - press M",
             shortcut="M",
         )
+        
+        self.save_label_selection = setup_layerselect(
+            _layout, viewer=self._viewer, layer_type=Labels, function=lambda: None
+        )
+        
+        self.save_objects_to_selective_layer_button = setup_iconbutton(
+            _layout,
+            "Save to Selective Layer",
+            "pop_out",
+            self._viewer.theme,
+            self.add_objects_to_selective_layer,
+            tooltips="Save all object to a selective layer",
+        )
 
         self.instance_aggregation_ckbx = setup_checkbox(
             _layout,
@@ -218,7 +231,7 @@ class BaseGUI(QWidget):
         _text = setup_label(h_layout, "Class ID:", stretch=2)
         _text.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
         _text.setFixedWidth(70)
-        self.class_for_init = setup_spinbox(h_layout, default=1, stretch=1)
+        self.class_for_init = setup_spinbox(h_layout, maximum = 20000, default=1, stretch=1)
         self.class_for_init.setSizePolicy(QSizePolicy.Fixed, QSizePolicy.Minimum)
 
         _layout.addLayout(h_layout)
@@ -351,14 +364,6 @@ class BaseGUI(QWidget):
         )
         # self.label_selection.setSizeAdjustPolicy(QComboBox.AdjustToMinimumContentsLength)
 
-        self.save_selected_button = setup_iconbutton(
-            _layout,
-            "Save Selected Layer",
-            "copy_to_clipboard",
-            self._viewer.theme,
-            self.on_save_selected_layer,
-            tooltips="Save the selected layer as .mrc (binary 0/1, uint8)"
-        )
         self.save_objects_button = setup_iconbutton(
             _layout,
             "Save Object Layers",
@@ -418,35 +423,6 @@ class BaseGUI(QWidget):
     def _export(self) -> None:
         """Placeholder method for exporting all generated label layers"""
 
-    def on_save_selected_layer(self):
-        # 通过 label_selection 获取当前选择的图层
-        try:
-            layer = self.label_selection.currentLayer
-        except AttributeError:
-            print("No layer selected in label_selection!")
-            return
-
-        if layer is None:
-            print("No layer selected!")
-            return
-
-        data = layer.data
-        binary_data = (data > 0).astype(np.uint8)
-
-        # 弹出文件保存对话框
-        file_path, _ = QFileDialog.getSaveFileName(self, "Save Selected Layer", "", "MRC Files (*.mrc)")
-        if not file_path:
-            return
-        if not file_path.lower().endswith('.mrc'):
-            file_path += '.mrc'
-
-        import mrcfile
-        with mrcfile.new(file_path, overwrite=True) as mrc:
-            mrc.set_data(binary_data)
-            mrc.voxel_size = 17.14
-
-        print("Saved selected layer to", file_path)
-
     # 新增：合并所有以 "object" 开头的图层，并保存为 .mrc (int16 格式)
     def on_save_objects_layers(self):
         # 筛选所有名称以 "object" 开头的图层
@@ -476,3 +452,49 @@ class BaseGUI(QWidget):
             mrc.voxel_size = 17.14
 
         print("Saved merged object layers to", file_path)
+        
+    def add_objects_to_selective_layer(self):
+        """将所有对象添加到选择性图层"""
+        # 1. 拿到目标 Labels layer 名称
+        selected_layer_name = self.save_label_selection.currentText()
+        if not selected_layer_name:
+            print("No layer selected for saving objects.")
+            return
+
+        # 2. 拷贝成可写的 ndarray
+        selected_layer = self._viewer.layers[selected_layer_name]
+        writable_data = np.array(selected_layer.data, copy=True)
+
+        # 3. 找到所有以 "object" 开头的 layer
+        object_layers = [
+            layer for layer in self._viewer.layers
+            if layer.name.startswith("object")
+        ]
+
+        # 4. 遍历每个 object layer，把它“烙印”到 writable_data 上
+        for layer in object_layers:
+            object_data = layer.data
+            binary_object_data = (object_data > 0).astype(np.uint8)
+
+            # 计算下一个可用的 ID
+            if np.any(writable_data):
+                next_id = int(writable_data.max()) + 1
+            else:
+                next_id = 1
+
+            # 构造掩码：object_data>0 且 writable_data==0
+            mask = (binary_object_data > 0) & (writable_data == 0)
+
+            # 在可写数组上赋值
+            writable_data[mask] = next_id
+
+            # 5. 通过 viewer.layers.remove() 删除这个 object layer
+            self._viewer.layers.remove(layer)
+
+        # 6. 把修改后的数据写回到 Labels layer，并刷新
+        selected_layer.data = writable_data
+        selected_layer.refresh()
+
+        # 7. 清理状态
+        self._clear_layers()
+        self._unlock_session()
